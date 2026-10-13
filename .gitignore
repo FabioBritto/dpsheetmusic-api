@@ -33,3 +33,5 @@ build/
 .vscode/
 
 *.spec.md
+
+*.env
