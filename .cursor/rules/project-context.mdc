@@ -1,0 +1,63 @@
+---
+description: Contexto geral do projeto DP Sheet Music API (stack, arquitetura, regras inegociáveis)
+alwaysApply: true
+---
+
+# DP Sheet Music API
+
+API de venda de arranjos de músicas de domínio público.
+
+## Documentos de referência
+
+- `PROJECT.md` (raiz): guia geral e norte do projeto. **Não gere código diretamente a partir dele.** Use-o para contexto e para manter as specs coerentes entre si.
+- `specs/`: **fonte de verdade para implementar.** Cada funcionalidade tem sua spec (modelo em `specs/_template.md`).
+- Se uma spec e o `PROJECT.md` entrarem em conflito, avise-me antes de agir.
+
+## Stack
+
+- Java 21, Maven, Spring Boot 4.1.x
+- Spring Web, Spring Data JPA, Spring Security, Validation, Actuator
+- PostgreSQL, **Liquibase com changelogs em YAML**, Docker / Docker Compose
+- **MapStruct** (entidade ↔ DTO), **Apache PDFBox** (marca d'água em PDF), **bucket4j** (rate limiting)
+- springdoc-openapi (Swagger), Testcontainers, JUnit 5
+- Configuração em YAML (`application.yml`, `application-{perfil}.yml`)
+- **Sem Lombok.** Não adicione a dependência nem use suas anotações.
+
+## Spring Boot 4: atenção
+
+O projeto usa Spring Boot 4.x. **Não assuma APIs ou starters do Boot 3.x.** Em caso de dúvida sobre pacotes, starters, configuração de Jackson, testes ou compatibilidade de bibliotecas (ex.: springdoc, MapStruct, bucket4j), diga que não tem certeza e peça para eu conferir a documentação oficial, em vez de chutar.
+
+## Arquitetura
+
+Monolito modular em `com.dpsheetmusic`, sem microsserviços:
+
+`catalog`, `customers`, `orders`, `payments`, `delivery`, `analytics`, `admin`, `shared`.
+
+- Cada módulo tem seu pacote. Evite dependências cíclicas entre módulos.
+- A comunicação entre módulos é feita por interfaces ou eventos internos do Spring, nunca acessando o repositório de outro módulo diretamente.
+- Prefixo de API: `/api/v1`. Rotas administrativas: `/api/v1/admin/**` (role `ADMIN`).
+
+## Regras inegociáveis
+
+- **Dinheiro:** `BIGINT` (`long` em Java) na menor unidade da moeda (centavos) + código da moeda (ISO 4217). Nunca `float`/`double`.
+- **IDs:** `UUID` em todas as entidades.
+- **Enums:** persistidos como texto (`@Enumerated(EnumType.STRING)`). Os valores estão no `PROJECT.md` (seção 5.4). Não invente, renomeie nem remova valores sem me avisar.
+- **Schema:** só muda via changelog Liquibase em YAML. `spring.jpa.hibernate.ddl-auto` deve ser `validate` ou `none`.
+- **Listagens paginadas:** nenhum endpoint devolve coleção de recursos sem paginação.
+- **Pedido `PAID` somente via webhook** validado e idempotente, nunca pelo redirect do navegador.
+- **Arquivos vendidos (PDF)** ficam em storage privado. Nunca exponha `storage_key` ou URL permanente; use URL assinada de curta duração.
+- **Nunca exponha entidades JPA** na API. Use DTOs (`record`) e MapStruct.
+- **Nenhum segredo no código ou no repositório.** Use variáveis de ambiente.
+
+## Integrações externas (fase futura)
+
+Gateway de pagamento (incluindo webhooks reais), e-mail e storage são acessados por **interfaces**. Por enquanto existem apenas implementações **fake**. Não implemente integrações reais nem adicione SDKs de terceiros (Stripe, AWS, provedores de e-mail etc.) sem eu pedir. O gateway ainda não foi escolhido: programe contra a interface `PaymentGateway`.
+
+## Spring Security
+
+Eu implemento a segurança. Não escreva nem altere configuração de segurança (`SecurityFilterChain`, autenticação, JWT, magic link, regras de acesso) por conta própria. Quando eu pedir, atue como revisor (ver `learning-mode`).
+
+## Idioma
+
+- Código, nomes de classes, métodos, colunas, rotas e commits: **inglês**.
+- Explicações e conversa comigo: **português do Brasil**.

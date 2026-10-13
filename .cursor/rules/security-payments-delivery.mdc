@@ -1,0 +1,58 @@
+---
+description: Regras de segurança, pagamentos e entrega de arquivos
+globs: "**/security/**,**/payments/**,**/delivery/**,**/orders/**,**/shared/**"
+alwaysApply: false
+---
+
+# Segurança, pagamentos e entrega
+
+> A configuração de segurança é **implementada por mim**; seu papel é revisar (ver `learning-mode.mdc`). As regras desta seção são o **checklist de revisão** e as restrições que valem para qualquer código gerado nesses módulos.
+
+## Pagamentos
+
+- Programe contra a interface `PaymentGateway`. Nada de SDK de gateway fora do pacote de implementação, e **por enquanto só existe a implementação fake**. A implementação real (e o tratamento real de webhooks) é fase futura.
+- O fluxo interno do webhook é desenvolvido contra a fake e precisa ser correto desde já:
+  - **Valide a assinatura** antes de qualquer processamento. Assinatura inválida → rejeitar sem tocar no pedido.
+  - **Idempotência:** registre cada evento em `webhook_event` com `external_event_id` único. Evento repetido é ignorado, retornando sucesso ao gateway.
+- Transições de status do `Order` seguem uma máquina de estados explícita (`PENDING → PAID | FAILED`, `PAID → REFUNDED`). Transição inválida é erro, não sobrescrita silenciosa.
+- O preço é **copiado para o `OrderItem`** na criação do pedido (BIGINT, centavos). Nunca recalcule a partir do catálogo depois.
+- Reprocessar o mesmo webhook jamais pode gerar `DownloadGrant`s duplicados.
+- O valor cobrado vem do servidor. Nunca confie em preço enviado pelo cliente.
+
+## Entrega de arquivos
+
+- Acesso ao storage por interface, com **implementação fake** por enquanto. A implementação real (S3/R2) é fase futura.
+- PDFs em bucket privado. A API nunca devolve `storage_key` nem URL permanente.
+- Antes de gerar a URL assinada: validar que o `DownloadGrant` pertence ao cliente, não expirou e não excedeu `max_downloads`.
+- Incremente `download_count` de forma segura contra concorrência (atualização atômica ou lock).
+- URLs assinadas com expiração curta (minutos).
+- Marca d'água com o e-mail do comprador via **Apache PDFBox**. Não registre o e-mail em log e não deixe o PDF marcado em disco além do necessário.
+- Registre o download em `TrackingEvent`.
+
+## Checklist de revisão: autenticação e autorização
+
+- Rotas `/api/v1/admin/**` exigem role `ADMIN`. Regra de **negar por padrão**: qualquer rota nova começa protegida.
+- Verifique propriedade do recurso: um cliente só acessa os próprios pedidos e downloads (evite IDOR).
+- Magic link: token aleatório e imprevisível, de uso único, com expiração curta, armazenado como hash.
+- Senhas de admin com BCrypt/Argon2.
+- CORS restrito ao domínio do front. Nunca `*` em produção.
+- CSRF: avalie conforme o mecanismo escolhido (JWT em header vs. cookie de sessão) e registre a decisão no `PROJECT.md`.
+- `UserRole.CLIENT` existe no enum mas **não é usado inicialmente**: não crie fluxos que dependam dele sem spec.
+
+## Proteção de endpoints (bucket4j)
+
+- Rate limiting com **bucket4j** em: login, solicitação de magic link, download e `POST /events`.
+- Defina chave do limite (IP, e-mail, usuário) e limites por endpoint na spec. Atenção a IP atrás de proxy/CDN (cabeçalhos de IP real só podem ser confiáveis se vierem de proxy conhecido).
+- Valide e limite o tamanho de uploads (tipo MIME real, não só extensão).
+- Mensagens de erro de autenticação genéricas (não revele se um e-mail existe).
+- Listagens paginadas têm tamanho máximo de página, para evitar extração em massa.
+
+## Privacidade (GDPR/LGPD)
+
+- Colete o mínimo de dados pessoais.
+- Não registre dados pessoais em logs.
+- Prever exclusão/anonimização de dados de cliente quando solicitado, preservando registros fiscais necessários.
+
+## Segredos
+
+- Chaves de gateway, credenciais de storage, segredo de JWT e e-mail: apenas por variáveis de ambiente. Nunca em `application*.yml` versionado, exemplos ou testes.

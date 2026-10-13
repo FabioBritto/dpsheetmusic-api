@@ -1,0 +1,37 @@
+---
+description: Regras de banco de dados e migrations Liquibase (YAML)
+globs: "**/db/changelog/**,**/domain/**,**/repository/**"
+alwaysApply: false
+---
+
+# Banco de dados e Liquibase
+
+## Migrations
+
+- Changelogs **em YAML** (não use XML, SQL formatado nem JSON), em `src/main/resources/db/changelog/`, com um `db.changelog-master.yaml` que inclui os demais em ordem.
+- **Um changeset = uma mudança coesa.** Nomeie arquivos de forma ordenada e descritiva: `001-create-composer.yaml`, `002-create-work.yaml`...
+- **Nunca edite um changeset já aplicado** (nem em ambiente local compartilhado). Crie um novo changeset corrigindo.
+- Cada changeset tem `id` único e `author`. Quando for razoável, inclua `rollback`.
+- Mudanças destrutivas (drop de coluna/tabela, alteração de tipo) exigem aviso explícito e, em produção, estratégia em etapas.
+- `spring.jpa.hibernate.ddl-auto` = `validate` (ou `none`). Nunca `update`/`create`.
+
+## Modelagem
+
+- `snake_case` para tabelas e colunas. A convenção de nomes de tabela (singular ou plural) é definida na spec de bootstrap e aplicada de forma consistente em todo o projeto.
+- **Chave primária: `UUID`** (tipo `uuid` do PostgreSQL) em todas as tabelas. A estratégia de geração é definida na spec de bootstrap.
+- **Dinheiro: `BIGINT`** (menor unidade da moeda, centavos) + `currency CHAR(3)` (ISO 4217). Nunca `FLOAT`, `DOUBLE` ou `NUMERIC` para preço.
+- **Enums:** coluna de texto (`VARCHAR`) com o nome do valor, mapeada com `EnumType.STRING`. Os valores permitidos seguem o `PROJECT.md`, seção 5.4. Se a spec pedir, proteja com `CHECK`; lembre que mudar a lista de valores exige novo changeset.
+- Todas as tabelas têm `created_at` e `updated_at` (`TIMESTAMP WITH TIME ZONE`, em UTC).
+- Foreign keys explícitas, com `ON DELETE` pensado caso a caso.
+- **Índices** em: `slug`, `email`, todas as FKs e colunas usadas em filtros e em ordenação de listagens paginadas.
+- Constraints no banco (`NOT NULL`, `UNIQUE`, `CHECK`), não só na aplicação. Exemplos: `slug` único, `external_event_id` único em `webhook_event`.
+- `jsonb` apenas para dados realmente flexíveis (payload de webhook, metadata de tracking).
+
+## Dados sensíveis
+
+- Senhas só como hash (BCrypt/Argon2). Nunca em texto puro.
+- Não guarde dados de cartão. Eles nunca passam pela API.
+
+## Seeds
+
+- Dados de desenvolvimento ficam em changesets com `context: dev` (ou perfil equivalente), nunca rodando em produção.

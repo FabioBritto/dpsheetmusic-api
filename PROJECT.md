@@ -1,6 +1,6 @@
 # DP Sheet Music API
 
-> Documento de contexto do projeto. Use-o como referência principal no Cursor (ex.: `@PROJECT.md`) ou copie as seções relevantes para `.cursor/rules`.
+> Guia geral do projeto: visão, decisões de arquitetura e modelo de domínio em alto nível. Este documento é o **norte** para as specs especializadas em `specs/` (uma por funcionalidade). Ele **não** é a referência para gerar código: o detalhamento (regras de negócio, contratos, casos de borda, critérios de aceite) vive nas specs, e as regras de código vivem em `.cursor/rules/`.
 
 ---
 
@@ -31,9 +31,9 @@
 | Configuration | YAML (`application.yml`) |
 | Java | 21 |
 
-Dependências do Initializr: Spring Web, Spring Data JPA, Spring Security, Validation, PostgreSQL Driver, Liquibase Migration, Spring Boot Actuator, Lombok (opcional), Testcontainers.
+Dependências do Initializr: Spring Web, Spring Data JPA, Spring Security, Validation, PostgreSQL Driver, Liquibase Migration, Spring Boot Actuator, Testcontainers. **Sem Lombok.**
 
-Adicionar manualmente ao `pom.xml`: **springdoc-openapi** (`springdoc-openapi-starter-webmvc-ui`). Como o projeto usa Spring Boot 4.x, conferir na documentação do springdoc qual versão é compatível com Boot 4 antes de adicionar.
+Adicionar manualmente ao `pom.xml`: **springdoc-openapi** (`springdoc-openapi-starter-webmvc-ui`), **MapStruct** (com o annotation processor), **Apache PDFBox** e **bucket4j**. Como o projeto usa Spring Boot 4.x, conferir na documentação de cada biblioteca qual versão é compatível com Boot 4 antes de adicionar.
 
 > Pacotes Java não aceitam hífen. Por isso o pacote é `com.dpsheetmusic`, enquanto o artifact mantém os hífens.
 
@@ -47,16 +47,21 @@ Adicionar manualmente ao `pom.xml`: **springdoc-openapi** (`springdoc-openapi-st
 | Build | Maven |
 | Framework | Spring Boot 4.1.1, Spring Web, Spring Data JPA, Spring Security, Spring Validation |
 | Banco | PostgreSQL |
-| Migrations | **Liquibase** |
+| Migrations | **Liquibase** (changelogs em **YAML**) |
 | Documentação | **springdoc-openapi (Swagger UI)** |
 | Observabilidade | **Spring Boot Actuator** |
 | Containers | Docker / Docker Compose |
 | Testes | JUnit 5, Testcontainers (Postgres real), Spring Security Test |
-| Storage | S3 ou Cloudflare R2 (bucket **privado** para PDFs; áudios via CDN) |
-| E-mail transacional | Resend, Postmark ou Amazon SES (a definir) |
-| Gateway de pagamento | **A definir** (ver seção 7) |
+| Mapeamento entidade ↔ DTO | **MapStruct** |
+| PDF | **Apache PDFBox** (marca d'água com o e-mail do comprador) |
+| Rate limiting | **bucket4j** |
+| Storage | S3 ou Cloudflare R2 (bucket **privado** para PDFs; áudios via CDN). *Implementação real: fase futura* |
+| E-mail transacional | Resend, Postmark ou Amazon SES (a definir). *Implementação real: fase futura* |
+| Gateway de pagamento | **A definir** (ver seção 7). *Implementação real: fase futura* |
 
-Outras dependências úteis: Lombok (opcional), MapStruct (DTO mapping), Apache PDFBox (marca d'água), bucket4j (rate limiting).
+> **Integrações externas:** gateway de pagamento (incluindo o tratamento real de webhooks), e-mail e storage são acessados por **interfaces** no código. As implementações reais ficam para uma fase futura; até lá, usam-se implementações **fake** para desenvolvimento e testes.
+>
+> **Sem Lombok:** construtores, getters e setters são escritos à mão, e DTOs são `record`.
 
 ---
 
@@ -78,14 +83,17 @@ com.dpsheetmusic
 
 Diretrizes:
 - Controllers finos; regras de negócio em services.
-- DTOs separados das entidades JPA (nunca expor entidade direto na API).
+- DTOs separados das entidades JPA (nunca expor entidade direto na API), com conversão via MapStruct.
 - Erros padronizados (RFC 7807 / `ProblemDetail`).
 - Versionamento de API: prefixo `/api/v1`.
 - Endpoints admin sob `/api/v1/admin/**`, protegidos por role `ADMIN`.
+- **Toda listagem é paginada.** Nenhum endpoint devolve uma coleção de recursos sem paginação (`page`, `size`, `sort`), com tamanho máximo de página configurado. O formato da resposta paginada é definido na spec.
 
 ---
 
 ## 5. Modelo de domínio
+
+Todos os identificadores (`id`) são **UUID**.
 
 ### 5.1 Catálogo
 
@@ -93,7 +101,7 @@ Diretrizes:
 - `id`, `name`, `birth_year`, `death_year` (necessário para justificar o domínio público)
 
 **Work** (música)
-- `id`, `slug` (único, estável, para SEO), `title`, `composer_id`, `period`, `description`, `tags`, `status` (`DRAFT`/`PUBLISHED`), timestamps
+- `id`, `slug` (único, estável, para SEO), `title`, `composer_id`, `period`, `description`, `tags`, `status` (`WorkStatus`), timestamps
 - Traduzível (ver i18n, seção 8)
 
 **Instrumentation** (formação, como entidade, não string)
@@ -101,13 +109,13 @@ Diretrizes:
 - Composta por instrumentos (ex.: violino I, violino II, viola, violoncelo)
 
 **Arrangement** (versão de uma Work)
-- `id`, `work_id`, `instrumentation_id`, `key_signature` (tonalidade), `difficulty`, `price_amount`, `price_currency`, `page_count`, `status`, timestamps
+- `id`, `work_id`, `instrumentation_id`, `key_signature` (`KeySignature`), `difficulty` (`Difficulty`), `price_amount` (BIGINT), `price_currency`, `page_count`, `status` (`ArrangementStatus`), timestamps
 
 **AudioSample**
 - `id`, `arrangement_id`, `storage_url`/`storage_key`, `duration_seconds`, `format` (mp3/ogg)
 
-**ArrangementFile** (o PDF vendido; pode incluir partes separadas)
-- `id`, `arrangement_id`, `storage_key`, `type` (`SCORE`/`PART`), `label`
+**ArrangementFile** (o PDF vendido)
+- `id`, `arrangement_id`, `storage_key`, `type` (`ArrangementFileType`: partitura, partes separadas, ou ambas), `label`
 - **Sempre em bucket privado.**
 
 ### 5.2 Vendas
@@ -116,10 +124,10 @@ Diretrizes:
 - `id`, `email` (único), `name`, `locale`, `country`, `email_verified`
 
 **Order**
-- `id`, `customer_id`, `status` (`PENDING`, `PAID`, `FAILED`, `REFUNDED`), `currency`, `total_amount`, `gateway_reference`, timestamps
+- `id`, `customer_id`, `status` (`OrderStatus`), `currency`, `total_amount` (BIGINT), `gateway_reference`, timestamps
 
 **OrderItem**
-- `id`, `order_id`, `arrangement_id`, `unit_price_amount` (**snapshot do preço no momento da compra**), `currency`
+- `id`, `order_id`, `arrangement_id`, `unit_price_amount` (BIGINT; **snapshot do preço no momento da compra**), `currency`
 
 **Payment**
 - `id`, `order_id`, `gateway`, `gateway_transaction_id`, `status`, `raw_payload` (jsonb), timestamps
@@ -132,16 +140,39 @@ Diretrizes:
 
 ### 5.3 Usuários e métricas
 
-**User/AdminUser**
-- `id`, `email`, `password_hash`, `role` (`ADMIN`; clientes usam magic link)
+**User**
+- `id`, `email`, `password_hash`, `role` (`UserRole`)
+- O valor `CLIENT` existe no enum, mas **não é usado inicialmente**: clientes compram como `Customer` (sem conta) e acessam por magic link.
 
 **TrackingEvent**
-- `id`, `type` (`PAGE_VIEW`, `AUDIO_PLAY`, `BUY_CLICK`, `CHECKOUT_STARTED`, `PURCHASE_COMPLETED`, `DOWNLOAD`, `REFUND`), `work_id?`, `arrangement_id?`, `customer_id?`, `session_id`, `referrer`, `utm_*`, `metadata` (jsonb), `created_at`
+- `id`, `type` (`TrackingEventType`), `work_id?`, `arrangement_id?`, `customer_id?`, `session_id`, `referrer`, `utm_*`, `metadata` (jsonb), `created_at`
 
-Convenções de banco:
-- Migrations via **Liquibase** (changelogs em `src/main/resources/db/changelog/`, preferencialmente YAML ou SQL formatado).
-- Valores monetários: **`amount` em centavos (inteiro/`BIGINT`) + `currency` (ISO 4217)**; nunca `float`/`double`.
-- Chaves primárias: `UUID` ou `BIGINT` (decidir e manter consistente).
+### 5.4 Enums
+
+Persistidos como texto (o nome do valor). Os valores fazem parte do contrato com o banco: adicionar um valor é simples, mas renomear ou remover exige migration de dados.
+
+| Enum | Valores |
+|---|---|
+| `WorkStatus` | `DRAFT`, `PUBLISHED`, `INACTIVE` |
+| `ArrangementStatus` | `DRAFT`, `PUBLISHED`, `INACTIVE` |
+| `Difficulty` | `BEGINNER`, `EASY_INTERMEDIATE`, `INTERMEDIATE`, `ADVANCED_INTERMEDIATE`, `ADVANCED` |
+| `ArrangementFileType` | `SCORE`, `PARTS`, `SCORE_AND_PARTS` |
+| `OrderStatus` | `PENDING`, `PAID`, `FAILED`, `REFUNDED` |
+| `UserRole` | `ADMIN`, `CLIENT` |
+| `TrackingEventType` | `PAGE_VIEW`, `AUDIO_PLAY`, `BUY_CLICK`, `CHECKOUT_STARTED`, `PURCHASE_COMPLETED`, `DOWNLOAD`, `REFUND` |
+| `KeySignature` | 30 tonalidades (lista abaixo) |
+
+**`KeySignature`** (15 maiores e 15 menores, incluindo equivalentes enarmônicos):
+- Maiores: `C_MAJOR`, `G_MAJOR`, `D_MAJOR`, `A_MAJOR`, `E_MAJOR`, `B_MAJOR`, `F_SHARP_MAJOR`, `C_SHARP_MAJOR`, `F_MAJOR`, `B_FLAT_MAJOR`, `E_FLAT_MAJOR`, `A_FLAT_MAJOR`, `D_FLAT_MAJOR`, `G_FLAT_MAJOR`, `C_FLAT_MAJOR`
+- Menores: `A_MINOR`, `E_MINOR`, `B_MINOR`, `F_SHARP_MINOR`, `C_SHARP_MINOR`, `G_SHARP_MINOR`, `D_SHARP_MINOR`, `A_SHARP_MINOR`, `D_MINOR`, `G_MINOR`, `C_MINOR`, `F_MINOR`, `B_FLAT_MINOR`, `E_FLAT_MINOR`, `A_FLAT_MINOR`
+
+Ainda sem enum definido: `Payment.status` e `AudioSample.format`. Decidir nas specs correspondentes.
+
+### 5.5 Convenções de banco
+
+- Migrations via **Liquibase**, com changelogs em **YAML** em `src/main/resources/db/changelog/`.
+- Valores monetários: **`BIGINT`** na menor unidade da moeda (centavos) + `currency` (ISO 4217); nunca `float`/`double`.
+- Chaves primárias: **`UUID`** em todas as tabelas. A estratégia de geração (aleatória ou ordenada por tempo) é decidida na spec de bootstrap.
 - `created_at`/`updated_at` em todas as tabelas (JPA auditing).
 - Índices em `slug`, `email`, FKs e campos de filtro.
 
@@ -171,8 +202,8 @@ Nunca confiar no redirect do navegador. O fluxo é:
 - **Backend:** eventos de negócio próprios (`TrackingEvent`): compra, reembolso, download. Imunes a bloqueadores de anúncio.
 
 ### 6.5 Segurança
-- Spring Security com JWT (ou sessão) para admin.
-- Rate limiting em login, magic link, download e endpoints públicos de tracking.
+- Spring Security com JWT (ou sessão) para admin. **A configuração de segurança é implementada manualmente por mim; o Cursor atua apenas como revisor.**
+- Rate limiting com bucket4j em login, magic link, download e endpoints públicos de tracking.
 - CORS restrito ao domínio do front.
 - Segredos via variáveis de ambiente (nunca no repositório).
 - Validação de entrada em todos os DTOs.
@@ -196,7 +227,7 @@ public interface PaymentGateway {
 }
 ```
 
-Implementar primeiro uma versão **fake/mock** para desenvolvimento e testes; depois plugar a implementação real.
+Por enquanto existe apenas uma implementação **fake**, usada em desenvolvimento e testes. A implementação real do gateway e do tratamento real de webhooks é **fase futura**; o fluxo interno (assinatura, idempotência, criação de `DownloadGrant`) é desenvolvido e testado contra a fake.
 
 ---
 
@@ -209,6 +240,8 @@ Implementar primeiro uma versão **fake/mock** para desenvolvimento e testes; de
 ---
 
 ## 9. Endpoints sugeridos (rascunho)
+
+> Todas as listagens (`GET` de coleções) são **paginadas** (`page`, `size`, `sort`).
 
 ### Públicos
 | Método | Rota | Descrição |
@@ -235,7 +268,7 @@ Implementar primeiro uma versão **fake/mock** para desenvolvimento e testes; de
 | CRUD | `/api/v1/admin/arrangements` | Arranjos |
 | POST | `/api/v1/admin/arrangements/{id}/files` | Upload de PDF |
 | POST | `/api/v1/admin/arrangements/{id}/audio` | Upload de áudio |
-| PATCH | `/api/v1/admin/works/{id}/publish` | Publicar/despublicar |
+| PATCH | `/api/v1/admin/works/{id}/status` | Alterar status (`DRAFT`, `PUBLISHED`, `INACTIVE`) |
 | GET | `/api/v1/admin/orders` | Lista de pedidos |
 | POST | `/api/v1/admin/orders/{id}/refund` | Reembolso |
 | GET | `/api/v1/admin/metrics/*` | Métricas (vendas, funil, top obras) |
@@ -244,15 +277,16 @@ Implementar primeiro uma versão **fake/mock** para desenvolvimento e testes; de
 
 ## 10. Checklist de requisitos transversais
 
-- [ ] Liquibase configurado com changelog mestre
+- [ ] Liquibase configurado com changelog mestre em YAML
 - [ ] springdoc-openapi com Swagger UI em `/swagger-ui.html` (restringir em produção)
 - [ ] Actuator (`health`, `info`, `metrics`) com endpoints sensíveis protegidos
 - [ ] Testcontainers para testes de integração
 - [ ] Perfis de ambiente (`local`, `test`, `prod`)
-- [ ] Docker Compose (app + PostgreSQL, e opcionalmente MinIO para simular S3 localmente)
+- [ ] Docker Compose (app + PostgreSQL)
 - [ ] Dockerfile multi-stage
-- [ ] E-mail transacional (confirmação de compra, link de download, magic link)
-- [ ] Rate limiting
+- [ ] Interface de e-mail transacional (confirmação de compra, link de download, magic link) com implementação fake
+- [ ] Paginação padronizada em todas as listagens
+- [ ] Rate limiting (bucket4j)
 - [ ] Logs estruturados e alerta para falha de webhook
 - [ ] Backup automático do banco
 - [ ] Full-text search do PostgreSQL para busca no catálogo (sem Elasticsearch no início)
@@ -274,27 +308,13 @@ Implementar primeiro uma versão **fake/mock** para desenvolvimento e testes; de
 
 1. Bootstrap do projeto, Docker Compose, Liquibase, Actuator, Swagger.
 2. Módulo `catalog` (entidades, migrations, endpoints públicos de leitura).
-3. Segurança e admin (login, CRUD do catálogo).
-4. Upload/armazenamento de áudio e PDF (storage abstrato + MinIO local).
-5. Módulo `orders` + `payments` com gateway **mock**.
+3. Segurança (implementada por mim, com revisão do Cursor) e admin (login, CRUD do catálogo).
+4. Upload/armazenamento de áudio e PDF (interface de storage + implementação fake).
+5. Módulo `orders` + `payments` com gateway **fake**.
 6. Webhook com idempotência, criação de `DownloadGrant`.
 7. Módulo `delivery` (URL assinada, limite de downloads, marca d'água).
 8. Magic link e "Minhas compras".
-9. E-mails transacionais.
+9. E-mails transacionais (interface + implementação fake).
 10. `analytics` (eventos e métricas admin).
-11. Integração com o gateway real.
+11. **Fase futura:** implementações reais das integrações externas (gateway de pagamento e webhooks, e-mail, storage).
 12. Rate limiting, hardening, observabilidade e deploy.
-
----
-
-## 13. Instruções para o Cursor
-
-Ao gerar código neste projeto:
-- Seguir a arquitetura modular da seção 4 e **não** criar microsserviços.
-- Usar sempre DTOs (preferencialmente `record`) na camada web.
-- Toda mudança de schema deve ser feita via **changelog Liquibase**; nunca usar `ddl-auto=update`/`create` (usar `validate` ou `none`).
-- Dinheiro sempre como inteiro em centavos + código da moeda.
-- Não expor nunca `storage_key` ou URLs permanentes dos PDFs.
-- Escrever testes de integração com Testcontainers para fluxos críticos (checkout, webhook, download).
-- Documentar endpoints com anotações do springdoc (`@Operation`, `@ApiResponse`).
-- Nenhum segredo hardcoded; usar `application-*.yml` com variáveis de ambiente.

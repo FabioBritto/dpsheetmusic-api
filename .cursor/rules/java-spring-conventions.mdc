@@ -1,0 +1,76 @@
+---
+description: Convenções de código Java e Spring Boot do projeto
+globs: "**/*.java"
+alwaysApply: false
+---
+
+# Convenções Java / Spring
+
+## Estrutura por módulo
+
+Dentro de cada módulo (ex.: `com.dpsheetmusic.catalog`):
+
+```
+catalog/
+├── web/          # Controllers e DTOs (request/response)
+├── service/      # Regras de negócio
+├── domain/       # Entidades JPA e enums
+├── repository/   # Spring Data repositories
+└── mapper/       # Interfaces MapStruct (entidade <-> DTO)
+```
+
+- **Controller** só recebe, valida, delega e responde. Sem regra de negócio.
+- **Service** concentra a regra de negócio e define as fronteiras transacionais (`@Transactional`).
+- **Repository** não é acessado por controller nem por outro módulo.
+- Um módulo expõe ao resto da aplicação apenas o que for necessário (interfaces de serviço ou eventos).
+
+## Sem Lombok
+
+O projeto **não usa Lombok**. Não use `@Data`, `@Getter`, `@Setter`, `@Builder`, `@RequiredArgsConstructor` nem nenhuma outra anotação do Lombok. Escreva construtores, getters e setters explicitamente. Use `record` sempre que o tipo for imutável (DTOs, eventos, value objects simples).
+
+## DTOs e MapStruct
+
+- DTOs de request e response são `record`.
+- Validação com Bean Validation (`@NotBlank`, `@Size`, `@Positive`, etc.) no request.
+- Conversão entidade ↔ DTO **somente via MapStruct**, em interfaces no pacote `mapper`, com `componentModel = "spring"` e `unmappedTargetPolicy = ReportingPolicy.ERROR`, para que um campo esquecido quebre a compilação em vez de ficar nulo em silêncio.
+- Mappers não contêm regra de negócio nem acessam repositórios.
+- Cuidado ao mapear relacionamentos `LAZY`: mapeie só o que o DTO precisa e dentro de uma transação aberta. Nunca dispare carregamento de coleções sem querer.
+- Nunca devolva entidade JPA em controller.
+
+## Paginação
+
+- **Toda listagem é paginada.** Controllers recebem `Pageable` e devolvem uma página, nunca `List`.
+- Services e repositories usam `Pageable`/`Page` (ou `Slice`, se a spec disser) em todo método de listagem exposto pela API.
+- O tamanho padrão e o tamanho máximo de página são configurados globalmente. Confirme na documentação do Spring Boot 4 o nome exato da propriedade.
+- Defina uma **lista de campos permitidos para ordenação** em cada listagem. Não aceite `sort` por qualquer propriedade da entidade.
+- Não exponha o `PageImpl` serializado diretamente. O formato da resposta paginada é definido na spec.
+- Cuidado com paginação + `JOIN FETCH` de coleções: o Hibernate pagina em memória. Prefira buscar os IDs paginados e carregar os relacionamentos em seguida, ou use projeções.
+
+## Entidades JPA
+
+- Identificador `UUID`. A estratégia de geração é definida na spec de bootstrap; não decida sozinho.
+- Construtor sem argumentos `protected` (exigido pelo JPA) e construtor público com os campos obrigatórios.
+- Implemente `equals`/`hashCode` com cuidado (baseados no identificador) e evite `toString` que percorra relacionamentos.
+- Relacionamentos `@ManyToOne`/`@OneToMany` com `FetchType.LAZY` por padrão.
+- Fique atento a **N+1**: use `JOIN FETCH`, `@EntityGraph` ou projeções quando listar com relacionamentos.
+- Enums com `@Enumerated(EnumType.STRING)`, nunca `ORDINAL`. Os enums vivem em `domain` e seus valores seguem o `PROJECT.md`, seção 5.4.
+- `created_at` e `updated_at` via JPA Auditing.
+- Dinheiro: `long` (BIGINT, centavos) + `String currency` (ISO 4217).
+
+## Erros
+
+- Exceções de domínio específicas (ex.: `WorkNotFoundException`), tratadas em um `@RestControllerAdvice` central.
+- Respostas de erro no formato `ProblemDetail` (RFC 7807).
+- Nunca vaze stack trace nem mensagens internas ao cliente.
+
+## Estilo
+
+- Injeção por **construtor** (sem `@Autowired` em campo). Campos `final`.
+- Nomes em inglês. Métodos curtos, com um propósito.
+- Sem `System.out.println`; use SLF4J. Nunca registre em log e-mails completos, tokens, URLs assinadas ou payloads de pagamento sem necessidade.
+- Prefira `Optional`/exceções claras a retornar `null`.
+- Comentários explicam o *porquê*, não o *quê*.
+
+## Documentação da API
+
+- Controllers anotados com springdoc (`@Tag`, `@Operation`, `@ApiResponse`) descrevendo sucesso e erros. Em listagens, documente os parâmetros de paginação e os campos de ordenação aceitos.

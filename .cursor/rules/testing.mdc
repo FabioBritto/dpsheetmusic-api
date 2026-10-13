@@ -1,0 +1,36 @@
+---
+description: Padrões de teste do projeto
+globs: "**/src/test/**"
+alwaysApply: false
+---
+
+# Testes
+
+## Estratégia
+
+- **Testes unitários** para regras de negócio em services (JUnit 5 + Mockito/AssertJ). Rápidos e sem Spring quando possível.
+- **Testes de integração** com **Testcontainers (PostgreSQL real)** para repositórios, migrations e fluxos críticos. Não use H2 para substituir o Postgres.
+- Fluxos críticos que **exigem** teste de integração: checkout, webhook (incluindo evento duplicado), geração de `DownloadGrant`, limite de downloads, autorização de rotas admin.
+- **Mappers MapStruct:** teste os que tiverem regra de conversão não trivial (campos renomeados, enums, valores calculados). Mapeamentos triviais já são protegidos por `unmappedTargetPolicy = ERROR`.
+- **Paginação:** toda listagem tem teste cobrindo primeira página, última página, página vazia, tamanho acima do máximo e ordenação por campo não permitido.
+
+## Integrações externas
+
+- Gateway de pagamento, e-mail e storage só existem como interface + **implementação fake**. Os testes usam as fakes.
+- Nunca chame serviços externos reais em testes.
+- O fluxo interno do webhook (assinatura, idempotência, criação de `DownloadGrant`) é testado contra a fake do gateway.
+
+## Boas práticas
+
+- Nomes que descrevem o comportamento: `shouldNotMarkOrderAsPaidWhenWebhookSignatureIsInvalid`.
+- Estrutura Arrange / Act / Assert, com um comportamento por teste.
+- AssertJ para asserções.
+- Testes independentes entre si, sem depender de ordem de execução.
+- Cada critério de aceite da spec deve ter ao menos um teste correspondente. Cite a spec no nome da classe ou em um comentário curto.
+- Testes de segurança: verifique que rotas admin retornam `401`/`403` sem credenciais adequadas.
+
+## No modo MANUAL
+
+Se a spec estiver em modo `MANUAL`, não escreva os testes por mim. Sugira quais casos eu deveria cobrir (felizes, de erro e de borda) e revise os que eu escrever.
+
+Testes de segurança seguem a mesma lógica: como a configuração do Spring Security é minha, eu escrevo os testes dela e você revisa.
